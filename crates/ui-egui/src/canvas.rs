@@ -3048,7 +3048,7 @@ fn render_start_rail(app: &mut PhotocraftApp, ui: &mut egui::Ui, rail_w: f32) {
     let (b_sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), Sense::hover());
     ui.painter().line_segment(
         [b_sep_rect.min, egui::pos2(b_sep_rect.max.x, b_sep_rect.min.y)],
-        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(22)),
+        egui::Stroke::new(1.0, t.separator),
     );
 
     ui.add_space(8.0);
@@ -3148,22 +3148,14 @@ fn render_first_run_content(app: &mut PhotocraftApp, ui: &mut egui::Ui, content_
         let drop_resp = drop_resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tl!("Open…"));
         let is_hov = drop_resp.hovered();
 
-        let border_color = if is_hov {
-            egui::Color32::from_white_alpha(80)
-        } else {
-            egui::Color32::from_white_alpha(26)
-        };
-        let bg_color = if is_hov {
-            egui::Color32::from_white_alpha(10)
-        } else {
-            egui::Color32::from_white_alpha(3)
-        };
+        let border_color = if is_hov { t.text_dim } else { t.separator };
+        let bg_color = if is_hov { t.hover } else { egui::Color32::TRANSPARENT };
         ui.painter().rect_filled(drop_r, 8.0, bg_color);
         ui.painter().rect_stroke(drop_r, 8.0, egui::Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
 
         // Centered icon & message
         let icon_box = Rect::from_center_size(egui::pos2(drop_r.center().x, drop_r.center().y - 18.0), egui::vec2(40.0, 40.0));
-        crate::icons::paint(ui, icon_box, "image", 34.0, if is_hov { egui::Color32::WHITE } else { t.text_dim });
+        crate::icons::paint(ui, icon_box, "image", 34.0, if is_hov { t.text } else { t.text_dim });
 
         let drop_msg = start_screen_drop_hint(app);
         ui.painter().text(
@@ -7515,8 +7507,10 @@ mod tests {
             PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
             h.state_mut().1 = true;
             h.run_steps(3);
-            for label in ["New document", "Join us on Discord"] {
-                for node in h.query_all_by_label_contains(label) {
+            for label in ["New file", "Open…"] {
+                let nodes: Vec<_> = h.query_all_by_label(label).collect();
+                assert!(!nodes.is_empty(), "`{label}` is rendered in a {width}-point-wide canvas");
+                for node in nodes {
                     let r = node.rect();
                     assert!(r.left() >= 0.0 && r.right() <= width, "`{label}` is clipped in a {width}-point-wide canvas: {r:?}");
                 }

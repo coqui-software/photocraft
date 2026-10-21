@@ -50,6 +50,11 @@ pub(crate) struct ThumbnailCache {
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_CONCURRENT_THUMBNAIL_LOADS: usize = 1;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn load_thumbnail_catching_panic(load: impl FnOnce() -> Option<ColorImage>) -> Option<ColorImage> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(load)).ok().flatten()
+}
+
 impl ThumbnailCache {
     /// Invalidate the cached thumbnail for a single path (e.g. after save, open, or remove).
     pub(crate) fn invalidate(&mut self, path: &str) {
@@ -479,7 +484,7 @@ pub(crate) fn get_or_load_thumbnail(app: &PhotocraftApp, ctx: &egui::Context, pa
             let key_clone = current_key;
             let file_len = meta.len();
             std::thread::spawn(move || {
-                let opt_img = load_thumbnail_image_bounded(&path_str, file_len);
+                let opt_img = load_thumbnail_catching_panic(|| load_thumbnail_image_bounded(&path_str, file_len));
                 let mut cache = cache_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 // Only enqueue if this request generation is still the active one
                 if cache.in_flight.get(&path_str).copied() == Some(req_id) {
@@ -717,6 +722,15 @@ pub(crate) fn render_inline_drop_card(ui: &mut Ui, drop_text: &str) -> bool {
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tl!("Open…")).clicked()
 }
 
+fn fit_image_rect(image_size: Vec2, bounds: Rect) -> Rect {
+    if image_size.x > 0.0 && image_size.y > 0.0 {
+        let scale = (bounds.width() / image_size.x).min(bounds.height() / image_size.y);
+        Rect::from_center_size(bounds.center(), image_size * scale)
+    } else {
+        bounds
+    }
+}
+
 /// Render a single row in list view with thumbnail icon.
 pub(crate) fn render_list_row(
     ui: &mut Ui,
@@ -741,7 +755,7 @@ pub(crate) fn render_list_row(
     ui.painter().rect_filled(thumb_box, t.radius_sm, t.field);
     if let Some(tex) = thumb {
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        ui.painter().image(tex.id(), thumb_box, uv, Color32::WHITE);
+        ui.painter().image(tex.id(), fit_image_rect(tex.size_vec2(), thumb_box), uv, Color32::WHITE);
     } else {
         icons::paint(ui, thumb_box, "file", 14.0, t.text_dim);
     }
@@ -905,6 +919,21 @@ pub(crate) fn show_home_recent(app: &mut PhotocraftApp, ui: &mut Ui, recent: &[S
 mod tests {
     use super::*;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn list_thumbnail_fit_preserves_aspect_ratio() {
+        let bounds = Rect::from_min_size(pos2(0.0, 0.0), vec2(24.0, 24.0));
+        let fitted = fit_image_rect(vec2(256.0, 144.0), bounds);
+        assert_eq!(fitted.size(), vec2(24.0, 13.5));
+        assert_eq!(fitted.center(), bounds.center());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn panicking_thumbnail_load_returns_no_preview() {
+        let loaded = load_thumbnail_catching_panic(|| panic!("simulated decoder panic"));
+        assert!(loaded.is_none());
+    }
 
     #[test]
     fn recent_grid_and_list_toggle_switches_view_mode() {
