@@ -47,6 +47,9 @@ pub(crate) struct ThumbnailCache {
     pub(crate) pending: Vec<(String, u64, CacheKey, Option<ColorImage>)>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_CONCURRENT_THUMBNAIL_LOADS: usize = 1;
+
 impl ThumbnailCache {
     /// Invalidate the cached thumbnail for a single path (e.g. after save, open, or remove).
     pub(crate) fn invalidate(&mut self, path: &str) {
@@ -187,10 +190,7 @@ fn read_psd_thumbnail_bounded(path: &Path, file_len: u64) -> Option<ColorImage> 
                 {
                     let rgba = img.convert(photocraft_codecs::ChannelLayout::Rgba, photocraft_codecs::SampleType::U8);
                     if rgba.data().len() == rgba.width() as usize * rgba.height() as usize * 4 {
-                        return Some(ColorImage::from_rgba_unmultiplied(
-                            [rgba.width() as usize, rgba.height() as usize],
-                            rgba.data(),
-                        ));
+                        return downsample_rgba(rgba.width(), rgba.height(), rgba.data(), 256);
                     }
                 }
             }
@@ -286,10 +286,7 @@ fn load_thumbnail_image_bounded(path: &str, file_len: u64) -> Option<ColorImage>
             {
                 let rgba = img.convert(photocraft_codecs::ChannelLayout::Rgba, photocraft_codecs::SampleType::U8);
                 if rgba.data().len() == rgba.width() as usize * rgba.height() as usize * 4 {
-                    return Some(ColorImage::from_rgba_unmultiplied(
-                        [rgba.width() as usize, rgba.height() as usize],
-                        rgba.data(),
-                    ));
+                    return downsample_rgba(rgba.width(), rgba.height(), rgba.data(), 256);
                 }
             }
         } else if let Ok(bytes) = std::fs::read(std_path)
@@ -298,10 +295,7 @@ fn load_thumbnail_image_bounded(path: &str, file_len: u64) -> Option<ColorImage>
         {
             let rgba = img.convert(photocraft_codecs::ChannelLayout::Rgba, photocraft_codecs::SampleType::U8);
             if rgba.data().len() == rgba.width() as usize * rgba.height() as usize * 4 {
-                return Some(ColorImage::from_rgba_unmultiplied(
-                    [rgba.width() as usize, rgba.height() as usize],
-                    rgba.data(),
-                ));
+                return downsample_rgba(rgba.width(), rgba.height(), rgba.data(), 256);
             }
         }
         return None;
@@ -471,6 +465,9 @@ pub(crate) fn get_or_load_thumbnail(app: &PhotocraftApp, ctx: &egui::Context, pa
         if app.background_jobs {
             let req_id = {
                 let mut cache = app.thumbnail_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if cache.in_flight.len() >= MAX_CONCURRENT_THUMBNAIL_LOADS {
+                    return cached_entry.and_then(|e| e.texture);
+                }
                 let id = cache.next_req_id;
                 cache.next_req_id = cache.next_req_id.wrapping_add(1);
                 cache.in_flight.insert(path.to_string(), id);
@@ -1292,17 +1289,17 @@ mod tests {
         let path_str = file_path.to_string_lossy().into_owned();
 
         let img = photocraft_codecs::Image::from_raw(
-            4,
-            4,
+            512,
+            512,
             photocraft_codecs::ChannelLayout::Rgb,
             photocraft_codecs::SampleType::U8,
-            [255, 0, 0].repeat(16),
+            [255, 0, 0].repeat(512 * 512),
         ).unwrap();
         let jfif = photocraft_codecs::encode(&img, photocraft_codecs::Format::Jpeg, &photocraft_codecs::EncodeOptions::default()).unwrap();
         let mut res_data = vec![0u8; 28];
         res_data[0..4].copy_from_slice(&1u32.to_be_bytes()); // format: 1 (kJpegRGB)
-        res_data[4..8].copy_from_slice(&4u32.to_be_bytes()); // width: 4
-        res_data[8..12].copy_from_slice(&4u32.to_be_bytes()); // height: 4
+        res_data[4..8].copy_from_slice(&512u32.to_be_bytes()); // width: 512
+        res_data[8..12].copy_from_slice(&512u32.to_be_bytes()); // height: 512
         res_data.extend_from_slice(&jfif);
         let resource = photocraft_psd::resources::ImageResource::new(
             photocraft_psd::resources::ids::THUMBNAIL,
@@ -1341,7 +1338,7 @@ mod tests {
         let thumb = load_thumbnail_image_bounded(&path_str, bytes.len() as u64);
         assert!(thumb.is_some(), "must extract embedded JFIF preview despite trailing multi-megabyte payload");
         let thumb_img = thumb.unwrap();
-        assert_eq!(thumb_img.size, [4, 4]);
+        assert_eq!(thumb_img.size, [256, 256], "embedded previews must be downsampled before texture creation");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -2136,10 +2136,14 @@ mod open_recent_tests {
     #[test]
     fn push_recent_evicts_thumbnails_beyond_cap() {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        for i in 0..25 {
+            app.push_recent(&format!("/tmp/item_{i}.png"));
+        }
+        let recent_paths = app.ui.recent_files.clone();
         {
             let mut cache = app.thumbnail_cache.lock().unwrap();
-            for i in 0..25 {
-                cache.entries.insert(format!("/tmp/item_{i}.png"), crate::home_recent_ui::ThumbnailEntry {
+            for path in &recent_paths {
+                cache.entries.insert(path.clone(), crate::home_recent_ui::ThumbnailEntry {
                     key: crate::home_recent_ui::CacheKey::OpenDoc { revision: 1 },
                     texture: None,
                     #[cfg(not(target_arch = "wasm32"))]
@@ -2147,12 +2151,11 @@ mod open_recent_tests {
                 });
             }
         }
-        for i in 0..25 {
-            app.push_recent(&format!("/tmp/item_{i}.png"));
-        }
+        let evicted_path = recent_paths.last().unwrap();
+        app.push_recent("/tmp/new.png");
         let cache = app.thumbnail_cache.lock().unwrap();
-        for i in 0..5 {
-            assert!(!cache.entries.contains_key(&format!("/tmp/item_{i}.png")), "evicted item_{i} must be removed from cache");
+        for path in &recent_paths {
+            assert_eq!(cache.entries.contains_key(path), path != evicted_path, "cache membership for {path} must match recent-list eviction");
         }
         assert_eq!(app.ui.recent_files.len(), 20);
     }
